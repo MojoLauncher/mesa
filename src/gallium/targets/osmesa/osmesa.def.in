@@ -9,11 +9,9 @@ OSMesaMakeCurrent@20
 OSMesaGetCurrentContext@0
 OSMesaPixelStore@8
 OSMesaGetIntegerv@8
-OSMesaGetDepthBuffer@20
 OSMesaGetColorBuffer@20
 OSMesaGetProcAddress@4
 OSMesaColorClamp@4
-OSMesaPostprocess@12
 glAccum@8
 glAlphaFunc@8
 glAreTexturesResident@12

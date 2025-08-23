@@ -106,16 +106,8 @@ struct osmesa_context
 {
    struct st_context *st;
 
-   bool ever_used;     /*< Has this context ever been current? */
-
    struct osmesa_buffer *current_buffer;
 
-   /* Storage for depth/stencil, if the user has requested access.  The backing
-    * driver always has its own storage for the actual depth/stencil, which we
-    * have to transfer in and out.
-    */
-   void *zs;
-   unsigned zs_stride;
 
    enum pipe_format depth_stencil_format, accum_format;
 
@@ -124,10 +116,6 @@ struct osmesa_context
    GLint user_row_length; /*< user-specified number of pixels per row */
    GLboolean y_up;        /*< TRUE  -> Y increases upward */
                           /*< FALSE -> Y increases downward */
-
-   /** Which postprocessing filters are enabled. */
-   unsigned pp_enabled[PP_FILTERS];
-   struct pp_queue_t *pp;
 };
 
 /**
@@ -361,28 +349,6 @@ osmesa_st_framebuffer_flush_front(struct st_context *st,
    if (statt != ST_ATTACHMENT_FRONT_LEFT)
       return false;
 
-   if (osmesa->pp) {
-      struct pipe_resource *zsbuf = NULL;
-      unsigned i;
-
-      /* Find the z/stencil buffer if there is one */
-      for (i = 0; i < ARRAY_SIZE(osbuffer->textures); i++) {
-         struct pipe_resource *res = osbuffer->textures[i];
-         if (res) {
-            const struct util_format_description *desc =
-               util_format_description(res->format);
-
-            if (util_format_has_depth(desc)) {
-               zsbuf = res;
-               break;
-            }
-         }
-      }
-
-      /* run the postprocess stage(s) */
-      pp_run(osmesa->pp, res, res, zsbuf);
-   }
-
    /* Snapshot the color buffer to the user's buffer. */
    bpp = util_format_get_blocksize(osbuffer->visual.color_format);
    if (osmesa->user_row_length)
@@ -391,12 +357,6 @@ osmesa_st_framebuffer_flush_front(struct st_context *st,
       dst_stride = bpp * osbuffer->width;
 
    osmesa_read_buffer(osmesa, res, osbuffer->map, dst_stride, osmesa->y_up);
-
-   /* If the user has requested the Z/S buffer, then snapshot that one too. */
-   if (osmesa->zs) {
-      osmesa_read_buffer(osmesa, osbuffer->textures[ST_ATTACHMENT_DEPTH_STENCIL],
-                         osmesa->zs, osmesa->zs_stride, true);
-   }
 
    return true;
 }
@@ -440,7 +400,7 @@ osmesa_st_framebuffer_validate(struct st_context *st,
        * attachment, since that's all we specified for the visual in
        * osmesa_init_st_visual().
        */
-      if (statts[i] == ST_ATTACHMENT_FRONT_LEFT) {
+      if (statts[i] == ST_ATTACHMENT_FRONT_LEFT || statts[i] == ST_ATTACHMENT_BACK_LEFT) {
          format = osbuffer->visual.color_format;
          bind = PIPE_BIND_RENDER_TARGET;
       }
@@ -704,9 +664,7 @@ GLAPI void GLAPIENTRY
 OSMesaDestroyContext(OSMesaContext osmesa)
 {
    if (osmesa) {
-      pp_free(osmesa->pp);
       st_destroy_context(osmesa->st);
-      free(osmesa->zs);
       FREE(osmesa);
    }
 }
@@ -787,34 +745,8 @@ OSMesaMakeCurrent(OSMesaContext osmesa, void *buffer, GLenum type,
     * your pixel buffer).
     */
 
-   if (!osmesa->ever_used) {
-      /* one-time init, just postprocessing for now */
-      bool any_pp_enabled = false;
-      unsigned i;
-
-      for (i = 0; i < ARRAY_SIZE(osmesa->pp_enabled); i++) {
-         if (osmesa->pp_enabled[i]) {
-            any_pp_enabled = true;
-            break;
-         }
-      }
-
-      if (any_pp_enabled) {
-         osmesa->pp = pp_init(osmesa->st->pipe,
-                              osmesa->pp_enabled,
-                              osmesa->st->cso_context,
-                              osmesa->st,
-                              st_context_invalidate_state);
-
-         pp_init_fbos(osmesa->pp, width, height);
-      }
-
-      osmesa->ever_used = true;
-   }
-
    return GL_TRUE;
 }
-
 
 
 GLAPI OSMesaContext GLAPIENTRY
@@ -887,48 +819,6 @@ OSMesaGetIntegerv(GLint pname, GLint *value)
 
 
 /**
- * Return information about the depth buffer associated with an OSMesa context.
- * Input:  c - the OSMesa context
- * Output:  width, height - size of buffer in pixels
- *          bytesPerValue - bytes per depth value (2 or 4)
- *          buffer - pointer to depth buffer values
- * Return:  GL_TRUE or GL_FALSE to indicate success or failure.
- */
-GLAPI GLboolean GLAPIENTRY
-OSMesaGetDepthBuffer(OSMesaContext c, GLint *width, GLint *height,
-                     GLint *bytesPerValue, void **buffer)
-{
-   struct osmesa_buffer *osbuffer = c->current_buffer;
-   struct pipe_resource *res = osbuffer->textures[ST_ATTACHMENT_DEPTH_STENCIL];
-
-   if (!res) {
-      *width = 0;
-      *height = 0;
-      *bytesPerValue = 0;
-      *buffer = NULL;
-      return GL_FALSE;
-   }
-
-   *width = res->width0;
-   *height = res->height0;
-   *bytesPerValue = util_format_get_blocksize(res->format);
-
-   if (!c->zs) {
-      c->zs_stride = *width * *bytesPerValue;
-      c->zs = calloc(c->zs_stride, *height);
-      if (!c->zs)
-         return GL_FALSE;
-
-      osmesa_read_buffer(c, res, c->zs, c->zs_stride, true);
-   }
-
-   *buffer = c->zs;
-
-   return GL_TRUE;
-}
-
-
-/**
  * Return the color buffer associated with an OSMesa context.
  * Input:  c - the OSMesa context
  * Output:  width, height - size of buffer in pixels
@@ -974,11 +864,9 @@ static struct name_function functions[] = {
    { "OSMesaGetCurrentContext", (OSMESAproc) OSMesaGetCurrentContext },
    { "OSMesaPixelStore", (OSMESAproc) OSMesaPixelStore },
    { "OSMesaGetIntegerv", (OSMESAproc) OSMesaGetIntegerv },
-   { "OSMesaGetDepthBuffer", (OSMESAproc) OSMesaGetDepthBuffer },
    { "OSMesaGetColorBuffer", (OSMESAproc) OSMesaGetColorBuffer },
    { "OSMesaGetProcAddress", (OSMESAproc) OSMesaGetProcAddress },
    { "OSMesaColorClamp", (OSMESAproc) OSMesaColorClamp },
-   { "OSMesaPostprocess", (OSMESAproc) OSMesaPostprocess },
    { NULL, NULL }
 };
 
@@ -1002,28 +890,4 @@ OSMesaColorClamp(GLboolean enable)
 
    _mesa_ClampColor(GL_CLAMP_FRAGMENT_COLOR_ARB,
                     enable ? GL_TRUE : GL_FIXED_ONLY_ARB);
-}
-
-
-GLAPI void GLAPIENTRY
-OSMesaPostprocess(OSMesaContext osmesa, const char *filter,
-                  unsigned enable_value)
-{
-   if (!osmesa->ever_used) {
-      /* We can only enable/disable postprocess filters before a context
-       * is made current for the first time.
-       */
-      unsigned i;
-
-      for (i = 0; i < PP_FILTERS; i++) {
-         if (strcmp(pp_filters[i].name, filter) == 0) {
-            osmesa->pp_enabled[i] = enable_value;
-            return;
-         }
-      }
-      debug_warning("OSMesaPostprocess(unknown filter)\n");
-   }
-   else {
-      debug_warning("Calling OSMesaPostprocess() after OSMesaMakeCurrent()\n");
-   }
 }

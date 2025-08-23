@@ -4,4 +4,6 @@
 *.pyo
 *.out
 /build
+/build-android/build-crossfile
+/build/android/build-android
 .venv/

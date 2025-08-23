@@ -210,8 +210,6 @@ OSMesaMakeCurrent( OSMesaContext ctx, void *buffer, GLenum type,
                    GLsizei width, GLsizei height );
 
 
-
-
 /*
  * Return the current Off-Screen Mesa rendering context handle.
  */
