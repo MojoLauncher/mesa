@@ -44,6 +44,14 @@
 #ifndef _GLAPI_H
 #define _GLAPI_H
 
+#ifdef USE_X86_ASM
+#undef USE_X86_ASM
+#endif
+
+#ifdef USE_X86_64_ASM
+#undef USE_X86_64_ASM
+#endif
+
 #include "util/macros.h"
 #include "util/u_thread.h"
 #include "util/detect_os.h"
