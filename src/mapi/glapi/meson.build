@@ -51,11 +51,8 @@ static_glapi_files += files(
 static_glapi_files += [
   glapitable_h, glapi_mapi_tmp_h, glprocs_h, glapitemp_h,
 ]
-if with_asm_arch == 'x86'
-  static_glapi_files += glapi_x86_s
-elif with_asm_arch == 'x86_64'
-  static_glapi_files += glapi_x86_64_s
-elif with_asm_arch == 'sparc'
+
+if with_asm_arch == 'sparc'
   static_glapi_files += glapi_sparc_s
 endif
 
