@@ -4,6 +4,7 @@ envsubst <crossfile >build-crossfile
 meson setup "build-android" \
         --prefix=/tmp/zink \
         --cross-file "build-crossfile" \
+            -Dbuildtype=release \
             -Dplatforms=android \
             -Dplatform-sdk-version=26 \
             -Dandroid-stub=true \
@@ -18,8 +19,12 @@ meson setup "build-android" \
             -Dosmesa=true \
             -Dvulkan-drivers= \
             -Dshared-glapi=disabled \
-            -Degl-lib-suffix=-mojo \
             -Dandroid-libbacktrace=disabled \
-            -Dgallium-drivers=softpipe,zink \
+            -Dgallium-drivers=zink \
+            -Dglx-read-only-text=true \
        ..
+#            -Db_lto=true \
+#            -Db_lto_mode=thin \
+#            -Dstrip=true \
+
 ninja -C "build-android" install

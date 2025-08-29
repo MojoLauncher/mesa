@@ -11,6 +11,7 @@
 		OSMesaGetProcAddress;
 		OSMesaMakeCurrent;
 		OSMesaPixelStore;
+		OSMesaSwapBuffers;
 		gl*;
 	local:
 		*;

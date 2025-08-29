@@ -81,6 +81,12 @@
 
 #include "frontend/api.h"
 
+#include "util/log.h"
+
+#define VK_USE_PLATFORM_ANDROID_KHR
+#include <vulkan/vulkan.h>
+#include <kopper_interface.h>
+
 
 
 extern struct pipe_screen *
@@ -307,7 +313,7 @@ osmesa_init_st_visual(struct st_visual *vis,
                       enum pipe_format ds_format,
                       enum pipe_format accum_format)
 {
-   vis->buffer_mask = ST_ATTACHMENT_FRONT_LEFT_MASK;
+   vis->buffer_mask = ST_ATTACHMENT_BACK_LEFT_MASK;
 
    if (ds_format != PIPE_FORMAT_NONE)
       vis->buffer_mask |= ST_ATTACHMENT_DEPTH_STENCIL_MASK;
@@ -340,24 +346,7 @@ osmesa_st_framebuffer_flush_front(struct st_context *st,
                                   struct pipe_frontend_drawable *drawable,
                                   enum st_attachment_type statt)
 {
-   OSMesaContext osmesa = OSMesaGetCurrentContext();
-   struct osmesa_buffer *osbuffer = drawable_to_osbuffer(drawable);
-   struct pipe_resource *res = osbuffer->textures[statt];
-   unsigned bpp;
-   int dst_stride;
-
-   if (statt != ST_ATTACHMENT_FRONT_LEFT)
-      return false;
-
-   /* Snapshot the color buffer to the user's buffer. */
-   bpp = util_format_get_blocksize(osbuffer->visual.color_format);
-   if (osmesa->user_row_length)
-      dst_stride = bpp * osmesa->user_row_length;
-   else
-      dst_stride = bpp * osbuffer->width;
-
-   osmesa_read_buffer(osmesa, res, osbuffer->map, dst_stride, osmesa->y_up);
-
+   if(statt != ST_ATTACHMENT_BACK_LEFT) return false;
    return true;
 }
 
@@ -378,7 +367,7 @@ osmesa_st_framebuffer_validate(struct st_context *st,
    enum st_attachment_type i;
    struct osmesa_buffer *osbuffer = drawable_to_osbuffer(drawable);
    struct pipe_resource templat;
-
+   
    memset(&templat, 0, sizeof(templat));
    templat.target = PIPE_TEXTURE_RECT;
    templat.format = 0; /* setup below */
@@ -391,39 +380,58 @@ osmesa_st_framebuffer_validate(struct st_context *st,
    templat.bind = 0; /* setup below */
    templat.flags = 0;
 
+   struct kopper_loader_info loader_info;
+   loader_info.has_alpha = 1;
+   loader_info.present_opaque = true;
+   loader_info.initial_swap_interval = 0;
+   loader_info.compression = 0;
+   VkAndroidSurfaceCreateInfoKHR* createInfo = (VkAndroidSurfaceCreateInfoKHR *)&loader_info.bos;
+   createInfo->sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+   createInfo->pNext = NULL;
+   createInfo->flags = 0;
+   createInfo->window = osbuffer->map;
+   
+
+   
    for (i = 0; i < count; i++) {
+      enum st_attachment_type atttype = statts[i];
       enum pipe_format format = PIPE_FORMAT_NONE;
       unsigned bind = 0;
-
-      /*
-       * At this time, we really only need to handle the front-left color
-       * attachment, since that's all we specified for the visual in
-       * osmesa_init_st_visual().
-       */
-      if (statts[i] == ST_ATTACHMENT_FRONT_LEFT || statts[i] == ST_ATTACHMENT_BACK_LEFT) {
-         format = osbuffer->visual.color_format;
-         bind = PIPE_BIND_RENDER_TARGET;
-      }
-      else if (statts[i] == ST_ATTACHMENT_DEPTH_STENCIL) {
-         format = osbuffer->visual.depth_stencil_format;
-         bind = PIPE_BIND_DEPTH_STENCIL;
-      }
-      else if (statts[i] == ST_ATTACHMENT_ACCUM) {
-         format = osbuffer->visual.accum_format;
-         bind = PIPE_BIND_RENDER_TARGET;
-      }
-      else {
-         debug_warning("Unexpected attachment type in "
-                       "osmesa_st_framebuffer_validate()");
+      void* loaderPrivate = NULL;
+      switch(atttype) {
+         case ST_ATTACHMENT_BACK_LEFT:
+            loaderPrivate = &loader_info;
+            format = osbuffer->visual.color_format;
+            bind = PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_RENDER_TARGET;
+            break;
+         case ST_ATTACHMENT_DEPTH_STENCIL:
+            format = osbuffer->visual.depth_stencil_format;
+            bind = PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_RENDER_TARGET;
+            break;
+         case ST_ATTACHMENT_ACCUM:
+            format = osbuffer->visual.accum_format;
+            bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET;
+            break;
+         default: 
+            debug_warning("Unexpected attachment type in "
+                          "osmesa_st_framebuffer_validate()");
+            break;
       }
 
       templat.format = format;
       templat.bind = bind;
       pipe_resource_reference(&out[i], NULL);
-      out[i] = osbuffer->textures[statts[i]] =
-         screen->resource_create(screen, &templat);
+      
+      struct pipe_resource *created_resource;
+      if(loaderPrivate == NULL || createInfo->window == NULL) {
+         created_resource = screen->resource_create(screen, &templat);
+      }else{
+         created_resource = screen->resource_create_drawable(screen, &templat, &loader_info);
+      }
+      osbuffer->textures[atttype] = created_resource;
+      out[i] = created_resource;
    }
-
+   mesa_logi("Done creating resources!");
    return true;
 }
 
@@ -473,6 +481,17 @@ osmesa_destroy_buffer(struct osmesa_buffer *osbuffer)
 /*****                    Public Functions                        *****/
 /**********************************************************************/
 
+
+GLAPI void GLAPIENTRY OSMesaSwapBuffers() {
+   OSMesaContext osmesa = OSMesaGetCurrentContext();
+   struct pipe_context *pipe = osmesa->st->pipe;
+   struct pipe_resource *drawable = osmesa->current_buffer->textures[ST_ATTACHMENT_BACK_LEFT];
+   struct pipe_screen *screen = get_st_manager()->screen;
+   pipe->flush_resource(pipe, drawable);
+   pipe->flush(pipe, NULL, PIPE_FLUSH_END_OF_FRAME);
+   screen->flush_frontbuffer(screen, pipe, drawable, 0, 0, NULL, 0, NULL);
+   pipe->invalidate_resource(pipe, drawable);
+}
 
 /**
  * Create an Off-Screen Mesa rendering context.  The only attribute needed is
@@ -703,7 +722,7 @@ OSMesaMakeCurrent(OSMesaContext osmesa, void *buffer, GLenum type,
       return GL_TRUE;
    }
 
-   if (!osmesa || !buffer || width < 1 || height < 1) {
+   if (!osmesa || width < 1 || height < 1) {
       return GL_FALSE;
    }
 
@@ -713,13 +732,13 @@ OSMesaMakeCurrent(OSMesaContext osmesa, void *buffer, GLenum type,
       return GL_FALSE;
    }
 
-   /* See if we already have a buffer that uses these pixel formats */
    if (osmesa->current_buffer &&
        (osmesa->current_buffer->visual.color_format != color_format ||
         osmesa->current_buffer->visual.depth_stencil_format != osmesa->depth_stencil_format ||
         osmesa->current_buffer->visual.accum_format != osmesa->accum_format ||
         osmesa->current_buffer->width != width ||
-        osmesa->current_buffer->height != height)) {
+        osmesa->current_buffer->height != height ||
+        osmesa->current_buffer->map != buffer)) {
       osmesa_destroy_buffer(osmesa->current_buffer);
       osmesa->current_buffer = NULL;
    }
@@ -867,6 +886,7 @@ static struct name_function functions[] = {
    { "OSMesaGetColorBuffer", (OSMESAproc) OSMesaGetColorBuffer },
    { "OSMesaGetProcAddress", (OSMESAproc) OSMesaGetProcAddress },
    { "OSMesaColorClamp", (OSMESAproc) OSMesaColorClamp },
+   { "OSMesaSwapBuffers", (OSMESAproc) OSMesaSwapBuffers },
    { NULL, NULL }
 };
 

@@ -110,6 +110,7 @@ extern "C" {
 
 typedef struct osmesa_context *OSMesaContext;
 
+GLAPI void GLAPIENTRY OSMesaSwapBuffers(void);
 
 /*
  * Create an Off-Screen Mesa rendering context.  The only attribute needed is
